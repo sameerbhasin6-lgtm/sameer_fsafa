@@ -1,7 +1,9 @@
-
 streamlit
 pandas
 plotly
-scikit-learn
-openpyxl
+matplotlib
+wordcloud
 textstat
+scikit-learn
+pdfplumber
+statsmodels
