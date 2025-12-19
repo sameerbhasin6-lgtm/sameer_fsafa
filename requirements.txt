@@ -5,5 +5,5 @@ matplotlib
 wordcloud
 textstat
 scikit-learn
-pdfplumber
+pypdf
 statsmodels
