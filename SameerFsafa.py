@@ -5,205 +5,201 @@ import plotly.graph_objects as go
 import matplotlib.pyplot as plt
 from wordcloud import WordCloud, STOPWORDS
 from textstat import textstat
-from sklearn.feature_extraction.text import CountVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
+from sklearn.decomposition import LatentDirichletAllocation
 from sklearn.linear_model import LinearRegression
+from textblob import TextBlob
 import numpy as np
 from pypdf import PdfReader
 import re
 from collections import Counter
 
 # --- PAGE CONFIGURATION ---
-st.set_page_config(
-    page_title="Forensic AI Auditor",
-    page_icon="⚖️",
-    layout="wide"
-)
+st.set_page_config(page_title="Forensic AI Commander", page_icon="🕵️‍♂️", layout="wide")
 
 # --- CSS STYLING ---
 st.markdown("""
     <style>
-    .metric-card {
-        background-color: #f0f2f6;
-        padding: 20px;
-        border-radius: 10px;
-        border-left: 5px solid #4e8cff;
-        box-shadow: 2px 2px 5px rgba(0,0,0,0.1);
-    }
-    .high-risk {
-        border-left: 5px solid #ff4b4b !important;
-        background-color: #fff1f1 !important;
-    }
-    .stDataFrame { border: 1px solid #e0e0e0; border-radius: 5px; }
+    .metric-card { background-color: #f8f9fa; padding: 15px; border-radius: 8px; border-left: 5px solid #4e8cff; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+    .high-risk { border-left: 5px solid #ff4b4b !important; background-color: #fff5f5 !important; }
+    .good-metric { border-left: 5px solid #00cc96 !important; background-color: #f0fff4 !important; }
     </style>
     """, unsafe_allow_html=True)
 
-# --- 1. OPTIMIZED TEXT EXTRACTION ---
+# --- 1. ADVANCED EXTRACTION (Page-wise) ---
 @st.cache_data
-def extract_text_fast(file, start_page=1, end_page=None):
-    """Extracts text using pypdf (Fast)."""
-    text = ""
+def extract_text_by_page(file, start_p=1, end_p=None):
+    """Extracts text page-by-page to allow trend analysis."""
+    pages_data = []
     try:
         reader = PdfReader(file)
         total_pages = len(reader.pages)
-        if end_page is None or end_page > total_pages:
-            end_page = total_pages
+        if end_p is None or end_p > total_pages: end_p = total_pages
         
-        # Simple extraction loop
-        for i in range(start_page - 1, end_page):
-            text += reader.pages[i].extract_text() + "\n"
-            
-        return text, total_pages
+        for i in range(start_p - 1, end_p):
+            text = reader.pages[i].extract_text()
+            if text:
+                pages_data.append({"page": i + 1, "text": text})
+                
+        return pages_data, total_pages
     except Exception as e:
-        return "", 0
+        st.error(f"Error: {e}")
+        return [], 0
 
-# --- 2. METRICS & COMPLEXITY ENGINE ---
-def calculate_forensic_metrics(text):
-    if not text: return None
+# --- 2. ANALYTICS ENGINE ---
+def analyze_page_metrics(pages_data):
+    """Calculates Fog Index and Sentiment for EVERY page individually."""
+    results = []
+    full_text = ""
     
-    # A. Readability
-    try: fog_index = textstat.gunning_fog(text)
-    except: fog_index = 0
-    
-    # B. Tokenization & Syllable Counting
-    words = re.findall(r'\w+', text.lower())
-    total_words = len(words) if words else 1
-    
-    # Identify Complex Words (>= 3 syllables)
-    # Optimization: Check unique words first, then map counts
-    unique_words = set(words)
-    complex_map = {w: textstat.syllable_count(w) for w in unique_words}
-    complex_words_list = [w for w in words if complex_map.get(w, 0) >= 3]
-    
-    # C. Passive Voice Detection (Heuristic)
-    # Pattern: "was/were/is/are" + verb ending in "ed"
-    passive_matches = re.findall(r'\b(am|are|is|was|were|be|been|being)\b\s+\w+ed\b', text.lower())
-    passive_count = len(passive_matches)
-    
-    # D. Dictionary Analysis
-    uncertainty_list = ['approximate', 'contingency', 'fluctuate', 'indefinite', 'uncertain', 'estimate', 'assuming', 'might', 'could', 'pending']
-    litigious_list = ['claim', 'legal', 'proceeding', 'litigation', 'petition', 'damages', 'class action', 'liability', 'court']
-    
-    u_count = sum(1 for w in words if w in uncertainty_list)
-    l_count = sum(1 for w in words if w in litigious_list)
+    for p in pages_data:
+        txt = p['text']
+        full_text += txt + " "
+        
+        # Metrics per page
+        try: fog = textstat.gunning_fog(txt)
+        except: fog = 0
+        
+        # Sentiment (-1 to +1)
+        blob = TextBlob(txt)
+        sentiment = blob.sentiment.polarity
+        
+        results.append({"Page": p['page'], "Fog Index": fog, "Sentiment": sentiment})
+        
+    return pd.DataFrame(results), full_text
 
-    return {
-        "fog_index": fog_index,
-        "uncertainty_score": (u_count / total_words) * 1000,
-        "litigious_score": (l_count / total_words) * 1000,
-        "passive_score": (passive_count / total_words) * 1000,
-        "total_words": total_words,
-        "complex_words": complex_words_list, # List of actual words
-        "clean_text": text
-    }
+def get_financial_entities(text):
+    """Regex to find Money (Crores, Lakhs, Millions, etc.)."""
+    # Matches: Rs. 500, $ 10.5 million, 50 crore, etc.
+    pattern = r'(Rs\.|INR|\$|€|£)\s?\d+(?:,\d+)*(?:\.\d+)?\s?(?:million|billion|trillion|crore|lakh|cr|mn)?'
+    matches = re.findall(pattern, text, re.IGNORECASE)
+    return Counter(matches).most_common(100)
 
-def calculate_similarity(text1, text2):
-    """Cosine Similarity between two texts."""
-    # Truncate to first 5000 words to speed up comparison if files are huge
-    t1 = " ".join(text1.split()[:5000])
-    t2 = " ".join(text2.split()[:5000])
-    vectorizer = CountVectorizer().fit_transform([t1, t2])
-    return cosine_similarity(vectorizer.toarray())[0][1]
+def perform_topic_modeling(text, n_topics=3):
+    """Uses LDA to find hidden themes in the text."""
+    # Remove boilerplate
+    stopwords = list(STOPWORDS) + ['company', 'year', 'financial', 'notes', 'december', 'march', 'ended', 'amount', 'value']
+    
+    vectorizer = CountVectorizer(max_df=0.9, min_df=2, stop_words=stopwords)
+    dtm = vectorizer.fit_transform([text])
+    
+    lda = LatentDirichletAllocation(n_components=n_topics, random_state=42)
+    lda.fit(dtm)
+    
+    topics = {}
+    feature_names = vectorizer.get_feature_names_out()
+    for index, topic in enumerate(lda.components_):
+        topics[f"Topic {index+1}"] = [feature_names[i] for i in topic.argsort()[-5:]]
+        
+    return topics
 
 # --- SIDEBAR ---
 with st.sidebar:
-    st.title("📂 Forensic Input")
-    uploaded_file_curr = st.file_uploader("Current Year Report (PDF)", type="pdf")
-    uploaded_file_prev = st.file_uploader("Previous Year Report (For Similarity)", type="pdf")
+    st.title("🕵️‍♂️ Forensic Settings")
+    uploaded_file = st.file_uploader("Upload Annual Report (PDF)", type="pdf")
     
     st.markdown("---")
-    st.write("⚙️ **Settings**")
-    use_all_pages = st.checkbox("Analyze Full Document?", value=False)
-    
+    st.caption("Scan Settings")
+    use_all = st.checkbox("Scan Entire Document", value=False)
     start_p, end_p = 1, 50
-    if not use_all_pages:
-        col_s, col_e = st.columns(2)
-        start_p = col_s.number_input("Start Page", 1, value=50)
-        end_p = col_e.number_input("End Page", 1, value=100)
+    if not use_all:
+        c1, c2 = st.columns(2)
+        start_p = c1.number_input("Start Page", 1, value=40)
+        end_p = c2.number_input("End Page", 1, value=80)
     else: end_p = None
 
-    fog_limit = st.slider("Fog Threshold", 10, 25, 18)
-
 # --- MAIN APP ---
-if uploaded_file_curr:
-    with st.spinner("Analyzing linguistic patterns..."):
-        # 1. Process Current File
-        text_curr, _ = extract_text_fast(uploaded_file_curr, start_p, end_p)
-        metrics = calculate_forensic_metrics(text_curr)
+if uploaded_file:
+    with st.spinner("Running Multi-Layer Forensic Scan..."):
+        # 1. Extraction
+        pages_data, total_pgs = extract_text_by_page(uploaded_file, start_p, end_p)
         
-        # 2. Process Previous File (If uploaded)
-        similarity_score = None
-        if uploaded_file_prev:
-            text_prev, _ = extract_text_fast(uploaded_file_prev, start_p, end_p)
-            if text_prev:
-                similarity_score = calculate_similarity(text_curr, text_prev)
-
-        # --- DASHBOARD UI ---
-        st.title("📊 Forensic Analysis Dashboard")
-        
-        # ROW 1: METRICS
-        c1, c2, c3, c4 = st.columns(4)
-        with c1:
-            is_high = metrics['fog_index'] > fog_limit
-            st.markdown(f'<div class="metric-card {"high-risk" if is_high else ""}"><h3>Fog Index</h3><h2>{metrics["fog_index"]:.1f}</h2><p>Complexity</p></div>', unsafe_allow_html=True)
-        with c2:
-            st.markdown(f'<div class="metric-card"><h3>Passive Voice</h3><h2>{metrics["passive_score"]:.1f}</h2><p>Per 1k Words</p></div>', unsafe_allow_html=True)
-        with c3:
-            st.markdown(f'<div class="metric-card"><h3>Uncertainty</h3><h2>{metrics["uncertainty_score"]:.1f}</h2><p>Per 1k Words</p></div>', unsafe_allow_html=True)
-        with c4:
-            sim_val = f"{similarity_score*100:.1f}%" if similarity_score else "N/A"
-            color_class = "high-risk" if (similarity_score and similarity_score < 0.8) else ""
-            st.markdown(f'<div class="metric-card {color_class}"><h3>YoY Similarity</h3><h2>{sim_val}</h2><p>Consistency</p></div>', unsafe_allow_html=True)
-
-        st.markdown("---")
-        
-        # ROW 2: COMPLEX WORD CLOUD & TABLE
-        st.subheader("☁️ Obfuscation Analysis: Complex Words Only")
-        st.caption("Visualizing words with 3+ syllables that contribute to the Fog Index.")
-        
-        col_cloud, col_table = st.columns([2, 1])
-        
-        with col_cloud:
-            # Generate cloud ONLY from complex words list
-            if metrics['complex_words']:
-                complex_text = " ".join(metrics['complex_words'])
-                wc = WordCloud(background_color="white", height=350, width=600, colormap="Reds", stopwords=STOPWORDS).generate(complex_text)
+        if pages_data:
+            # 2. Analysis
+            df_trends, full_text = analyze_page_metrics(pages_data)
+            financials = get_financial_entities(full_text)
+            
+            # Global Metrics
+            avg_fog = df_trends["Fog Index"].mean()
+            avg_sent = df_trends["Sentiment"].mean()
+            
+            # --- DASHBOARD HEADER ---
+            st.title("Forensic Commander Dashboard")
+            st.caption(f"Analyzing {len(pages_data)} pages | Total Words: {len(full_text.split()):,}")
+            
+            # --- ROW 1: KEY METRICS ---
+            col1, col2, col3, col4 = st.columns(4)
+            
+            with col1:
+                risk_label = "High Complexity" if avg_fog > 18 else "Readable"
+                color = "high-risk" if avg_fog > 18 else "good-metric"
+                st.markdown(f'<div class="metric-card {color}"><h3>Avg Fog Index</h3><h2>{avg_fog:.1f}</h2><p>{risk_label}</p></div>', unsafe_allow_html=True)
+            
+            with col2:
+                # Sentiment Logic: Too positive (>0.2) in a neutral doc is suspicious
+                sent_label = "Neutral"
+                if avg_sent > 0.15: sent_label = "Overly Positive (Salesy)"
+                elif avg_sent < -0.05: sent_label = "Negative Tone"
+                st.markdown(f'<div class="metric-card"><h3>Sentiment Score</h3><h2>{avg_sent:.2f}</h2><p>{sent_label}</p></div>', unsafe_allow_html=True)
                 
-                fig, ax = plt.subplots()
-                ax.imshow(wc, interpolation='bilinear')
-                ax.axis("off")
-                st.pyplot(fig)
-            else:
-                st.info("No complex words found.")
+            with col3:
+                # Quantify Money mentions
+                st.markdown(f'<div class="metric-card"><h3>Financial Figures</h3><h2>{len(financials)}</h2><p>Unique Amounts Found</p></div>', unsafe_allow_html=True)
+            
+            with col4:
+                # Complex Words Count
+                complex_words = [w for w in full_text.split() if textstat.syllable_count(w) >= 3]
+                st.markdown(f'<div class="metric-card"><h3>Complex Words</h3><h2>{len(complex_words)}</h2><p>Total Count</p></div>', unsafe_allow_html=True)
 
-        with col_table:
-            # Create a frequency table
-            if metrics['complex_words']:
-                counts = Counter(metrics['complex_words'])
-                df_complex = pd.DataFrame(counts.most_common(20), columns=["Word", "Count"])
-                st.write("**Top Complex Words**")
-                st.dataframe(df_complex, height=300, use_container_width=True)
+            st.markdown("---")
 
-        # ROW 3: REGRESSION BENCHMARK
-        st.markdown("---")
-        st.subheader("📈 Fraud Risk Regression Model")
-        
-        # Benchmark logic
-        np.random.seed(42)
-        bench_fog = np.random.normal(16, 3, 50)
-        bench_risk = (bench_fog * 1.5) + np.random.normal(0, 5, 50)
-        df_bench = pd.DataFrame({"Fog Index": bench_fog, "Risk Score": bench_risk})
-        
-        model = LinearRegression()
-        model.fit(df_bench[["Fog Index"]], df_bench["Risk Score"])
-        pred_risk = model.predict([[metrics['fog_index']]])[0]
-        
-        fig_reg = px.scatter(df_bench, x="Fog Index", y="Risk Score", opacity=0.3, title="Industry Benchmark (Simulated)")
-        line_x = np.linspace(df_bench["Fog Index"].min(), df_bench["Fog Index"].max(), 100).reshape(-1, 1)
-        fig_reg.add_traces(go.Scatter(x=line_x.flatten(), y=model.predict(line_x), mode='lines', name='Trend Line'))
-        fig_reg.add_traces(go.Scatter(x=[metrics['fog_index']], y=[pred_risk], mode='markers', marker=dict(color='red', size=15), name='Your File'))
-        
-        st.plotly_chart(fig_reg, use_container_width=True)
+            # --- ROW 2: THE "HEARTBEAT" CHART (New Feature) ---
+            st.subheader("📈 The 'Risk Heartbeat': Complexity Flow")
+            st.write("This chart tracks the Fog Index per page. **Spikes indicate pages where language suddenly becomes dense (hiding something).**")
+            
+            fig_trend = px.line(df_trends, x="Page", y="Fog Index", title="Readability Complexity by Page", markers=True)
+            fig_trend.add_hline(y=18, line_dash="dash", line_color="red", annotation_text="Danger Zone (>18)")
+            fig_trend.update_layout(hovermode="x unified")
+            st.plotly_chart(fig_trend, use_container_width=True)
+
+            # --- ROW 3: DEEP DIVE TABS ---
+            tab1, tab2, tab3 = st.tabs(["💰 Money Trail", "🧠 Topic Modeling", "☁️ Complex Cloud"])
+            
+            with tab1:
+                st.subheader("Extracted Financial Values")
+                st.write("The algorithm scanned for currency patterns (Rs, $, Cr, Mn).")
+                if financials:
+                    df_fin = pd.DataFrame(financials, columns=["Amount Pattern", "Frequency"])
+                    st.dataframe(df_fin, use_container_width=True, height=300)
+                else:
+                    st.info("No standard currency formats found.")
+
+            with tab2:
+                st.subheader("Hidden Themes (Unsupervised Learning)")
+                st.write("Using Latent Dirichlet Allocation (LDA) to group words into 3 main topics.")
+                try:
+                    topics = perform_topic_modeling(full_text)
+                    c1, c2, c3 = st.columns(3)
+                    for i, (topic, words) in enumerate(topics.items()):
+                        with [c1, c2, c3][i]:
+                            st.info(f"**{topic}**")
+                            st.write(", ".join(words))
+                except:
+                    st.warning("Not enough text to perform Topic Modeling.")
+
+            with tab3:
+                st.subheader("Complex Word Cloud")
+                if complex_words:
+                    wc = WordCloud(background_color="white", colormap="Reds", height=300).generate(" ".join(complex_words))
+                    fig_wc, ax = plt.subplots()
+                    ax.imshow(wc, interpolation='bilinear')
+                    ax.axis("off")
+                    st.pyplot(fig_wc)
+
+            # --- ROW 4: EXPORT REPORT ---
+            st.markdown("---")
+            csv = df_trends.to_csv(index=False).encode('utf-8')
+            st.download_button("📥 Download Full Forensic Report (CSV)", data=csv, file_name="forensic_audit_report.csv", mime="text/csv")
 
 else:
-    st.info("Upload a PDF to start.")
+    st.info("Please upload a file to activate the Commander Dashboard.")
