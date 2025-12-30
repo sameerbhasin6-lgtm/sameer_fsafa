@@ -7,3 +7,4 @@ textstat
 scikit-learn
 pypdf
 statsmodels
+textlob 
